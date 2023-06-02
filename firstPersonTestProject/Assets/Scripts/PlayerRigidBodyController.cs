@@ -3,70 +3,175 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-public class PlayerRigidBodyController : MonoBehaviour
+public class playerRigidBodyController : MonoBehaviour
 {   
     [SerializeField] float playerSpeed = 5f;
-    [SerializeField] float sprintMultiplyer = 2f;
-    [SerializeField] float jumpHeight = 2f;
-    [SerializeField] float gravity = -30f;
-    [SerializeField] float groundDistance = 0.4f;
+    [SerializeField] float sprintMultiplier = 2f;
+    [SerializeField] float airMultiplier = 0.4f;
+    [SerializeField] float jumpForce = 15f;
     [SerializeField] float smoothBlend = 0.1f;
+    [SerializeField] float groundDistance = 0.1f;
+    [SerializeField] float groundDrag;
+    [SerializeField] float airDrag;
+    [SerializeField] float maxSlopeAngle = 55f;
+    [SerializeField] float deathFloorHeight = -100f;
 
     [SerializeField] Animator customAnimator;
-    [SerializeField] CharacterController controller;
+    [SerializeField] GameObject gameOverMenu;
+    [SerializeField] GameObject pauseMenu;
     [SerializeField] LayerMask groundLayer;
+    [SerializeField] Transform orientation;
     [SerializeField] Transform groundCheck;
 
-    private Vector3 velocity;
-    private Vector3 movementInput;
+    private Rigidbody rb;
+    private CapsuleCollider playerCollider;
+    
+    private Vector2 movementInput;
+    private Vector3 movementDirection;
+    private RaycastHit slopeHit;
 
     private float sprint = 1f;
+    private float currentSlopeAngle;
     private bool isGrounded;
+    private bool canJump;
+    private bool exitSlope;
 
-    void Awake()
-    {
-        
+    private void Start() 
+    {   
+        rb = GetComponent<Rigidbody>();
+        rb.freezeRotation = true;
+
+        playerCollider = GetComponent<CapsuleCollider>();
     }
-    void Update()
-    {
-        isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundLayer);
-        customAnimator.SetBool("isGrounded", isGrounded);
+    private void Update()
+    {   
+        SpeedControl();
 
-        if (isGrounded && velocity.y < 0)
+        isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundLayer);
+
+        customAnimator.SetBool("isGrounded", isGrounded);
+        
+        if (isGrounded)
+        {   
+            rb.drag = groundDrag;
+        }
+        else
         {
-            velocity.y = -2f;
-            customAnimator.SetBool("isJumping", false);
-            controller.height = 2.05f;
-            controller.center = new Vector3(0, 1f, 0);
+            rb.drag = airDrag;
         }
 
-        float x = movementInput.x;
-        float z = movementInput.z;
-        Vector3 move = transform.right * x + transform.forward * z;
-        
-        controller.Move(move * playerSpeed * sprint * Time.deltaTime);
+        if (transform.position.y < deathFloorHeight)
+        {   
+            Time.timeScale = 0;
+            gameOverMenu.SetActive(true);
+        }
+        customAnimator.SetFloat("MoveX", movementInput.x, smoothBlend, Time.deltaTime);
+        customAnimator.SetFloat("MoveZ", movementInput.y, smoothBlend, Time.deltaTime);
+    }
 
-        velocity.y += gravity * Time.deltaTime;
+    private void FixedUpdate()
+    {
+        Movement();
+    }
 
-        controller.Move(velocity * Time.deltaTime);
+    private void OnCollisionEnter(Collision other)
+    {   
+        canJump = true;
+        exitSlope = false;
 
-        customAnimator.SetFloat("MoveX", x, smoothBlend, Time.deltaTime);
-        customAnimator.SetFloat("MoveZ", z, smoothBlend, Time.deltaTime);
+        customAnimator.ResetTrigger("jump");
+        customAnimator.SetBool("isGrounded", true);
+    }
+
+    private void OnCollisionExit(Collision other)
+    {
+        exitSlope = true;
+    }
+
+    private void Movement()
+    {   
+        movementDirection = orientation.forward * movementInput.y + orientation.right * movementInput.x;
+
+        if (isGrounded)
+        {
+            rb.AddForce(movementDirection.normalized * movementDirection.magnitude * playerSpeed * sprint * 10f, ForceMode.Force);
+        }
+        else if (!isGrounded)
+        {
+            rb.AddForce(movementDirection.normalized * playerSpeed * sprint * 10f * airMultiplier, ForceMode.Force);
+        }
+
+        if (OnSlope())
+        {
+            rb.AddForce(GetSlopeMoveDirection() * playerSpeed * sprint * 10f, ForceMode.Force);
+
+            if (rb.velocity.y > 0  && !exitSlope)
+            {
+                rb.AddForce(Vector3.down * 50f, ForceMode.Force);
+            }
+        }
+
+        if (currentSlopeAngle < maxSlopeAngle)
+        {
+            rb.useGravity = !OnSlope();
+        }
+    }
+
+    private bool OnSlope()
+    {
+        if (Physics.Raycast(transform.position,Vector3.down, out slopeHit, 0.15f))
+        {
+            currentSlopeAngle = Vector3.Angle(Vector3.up, slopeHit.normal);
+            return currentSlopeAngle < maxSlopeAngle && currentSlopeAngle != 0;
+        }
+
+        return false;
+    }
+
+    private Vector3 GetSlopeMoveDirection()
+    {
+         return Vector3.ProjectOnPlane(movementDirection, slopeHit.normal).normalized;
+    }
+
+    private void SpeedControl()
+    {   
+        if (OnSlope() && !exitSlope)
+        {
+            if (rb.velocity.magnitude > playerSpeed && rb.velocity.y > 0)
+            {
+                rb.velocity = rb.velocity.normalized * playerSpeed;
+            }
+        }
+        else
+        {
+            Vector3 flatVelocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+
+            if (isGrounded && flatVelocity.magnitude > playerSpeed && !customAnimator.GetBool("isRunning"))
+            {
+                Vector3 limitedVeloctiy = flatVelocity.normalized * playerSpeed;
+                rb.velocity = new Vector3(limitedVeloctiy.x, rb.velocity.y, limitedVeloctiy.z);
+            }
+        }   
     }
 
     private void OnMove(InputValue value)
     {   
-        movementInput = value.Get<Vector3>();
+        movementInput = value.Get<Vector2>();
     }
 
     private void OnJump()
-    {
-        if (!customAnimator.GetBool("isJumping"))
+    {   
+        if (canJump)
         {   
-            customAnimator.SetBool("isJumping", true);
-            velocity.y = Mathf.Sqrt(jumpHeight * -2 * gravity);
-            controller.height = 1.5f;
-            controller.center = new Vector3(0, 1.75f, 0);
+
+            canJump = false;
+            exitSlope = true;
+
+            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+            rb.AddForce(transform.up * jumpForce, ForceMode.Impulse);
+
+            customAnimator.SetTrigger("jump");
+            customAnimator.SetBool("isGrounded", false);
         }
     }
 
@@ -75,13 +180,27 @@ public class PlayerRigidBodyController : MonoBehaviour
         if (!customAnimator.GetBool("isRunning"))
         {
             customAnimator.SetBool("isRunning", true);
-            sprint = sprint * sprintMultiplyer;
+            sprint = sprint * sprintMultiplier;
 
         }
         else
         {
             customAnimator.SetBool("isRunning", false);
             sprint = 1f;
+        }
+    }
+
+    private void OnPause()
+    {
+        if (Time.timeScale > 0)
+        {
+            Time.timeScale = 0;
+            pauseMenu.SetActive(true);
+        }
+        else
+        {
+            Time.timeScale = 1;
+            pauseMenu.SetActive(false);
         }
     }
 }
